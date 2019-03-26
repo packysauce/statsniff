@@ -1,0 +1,15 @@
+[package]
+name = "statsniff"
+version = "0.1.0"
+authors = ["Patrick White <patrick@patrickwhite.org>"]
+edition = "2018"
+
+[dependencies]
+futures = "0.1"
+tokio = "0.1"
+packet = "0.1.2"
+pcap = { version = "0.7.1", git = "https://github.com/packysauce/pcap", features = ["stream"] }
+log = "0.4.6"
+simple_logger = "1.0"
+failure = "0.1"
+statsd-parser = "0.3"
