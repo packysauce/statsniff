@@ -177,9 +177,9 @@ fn main() -> io::Result<()> {
       .map_err(|_| ())
     });
 
-  let dumper = dumper.into_future().map(|_| ()).map_err(|_| ());
-  let garbage = garbage.into_future().map(|_| ()).map_err(|_| ());
-  let map_handler = map_handler.into_future().map(|_| ()).map_err(|_| ());
+  //let dumper = dumper.into_future().map(|_| ()).map_err(|_| ());
+  //let garbage = garbage.into_future().map(|_| ()).map_err(|_| ());
+  //let map_handler = map_handler.map(|_| ()).map_err(|_| ());
 
   let fut = unpacker.join(garbage);
   let fut = fut.join(map_handler);
