@@ -94,7 +94,7 @@ fn main() -> io::Result<()> {
   let stream = capture
     .stream(&Handle::default(), PayloadStream::new())
     .unwrap()
-    .map_err(|_| ())
+    .map_err(|e| error!("[SNIFF] Got error {}", e))
     .map(|p| TaggedMetric::from_frame(p));
 
   let gc_secs = 5;
@@ -130,7 +130,7 @@ fn main() -> io::Result<()> {
       }
     })
     .map(|_| ())
-    .map_err(|_| ());
+    .map_err(|e| error!("[GC] overall error {:?}", e));
 
   let dumper = Interval::new_interval(Duration::from_secs(5))
     .map_err(|e| error!("[DUMP] Timer error {:?}", e))
