@@ -1,4 +1,6 @@
-use futures::{IntoFuture, Stream};
+use futures::prelude::*;
+use futures::Stream;
+use futures_locks::RwLock;
 use log::{debug, error, info, warn};
 use packet::ether::{self, Packet as EtherPacket};
 use packet::ip;
@@ -10,7 +12,9 @@ use std::collections::{hash_map as hash, HashMap};
 use std::convert::From;
 use std::io;
 use std::net::{SocketAddr, SocketAddrV4};
+use std::time::Duration;
 use tokio::reactor::Handle;
+use tokio::timer::Interval;
 
 struct PayloadStream<T: AsRef<[u8]>>(std::marker::PhantomData<T>);
 
@@ -86,31 +90,100 @@ fn main() -> io::Result<()> {
     .filter("port 8125 and udp")
     .expect("Filter incorrect");
 
-  let mut seen_metrics: HashMap<SocketAddr, TaggedMetric> = HashMap::new();
+  let seen_metrics: RwLock<HashMap<SocketAddr, TaggedMetric>> = RwLock::new(HashMap::new());
   let stream = capture
     .stream(&Handle::default(), PayloadStream::new())
     .unwrap()
     .map_err(|_| ())
     .map(|p| TaggedMetric::from_frame(p));
 
-  let fut = stream.map_err(|_| ()).for_each(move |u| {
-    if u.is_err() {
-      warn!("Bad packet");
-      return Ok(());
-    }
-    let u = u.unwrap();
-    for metric in u {
-      match seen_metrics.entry(metric.source) {
-        hash::Entry::Occupied(mut e) => {
-          e.insert(metric);
-        }
-        hash::Entry::Vacant(e) => {
-          e.insert(metric);
-        }
-      }
-    }
-    Ok(println!("{:#?}", seen_metrics))
-  });
+  let gc_secs = 5;
+  let ttl = 30;
 
-  Ok(tokio::run(fut.into_future()))
+  let to_clean = seen_metrics.clone();
+
+  let garbage = Interval::new_interval(Duration::from_secs(gc_secs))
+    .map_err(|e| error!("Garbage collector timer error! {:?}", e))
+    .for_each({
+      let gc_secs = gc_secs.clone();
+      let to_clean = to_clean.clone();
+      move |_| {
+        info!("[GC] {} seconds have passed, tidying up", gc_secs);
+        to_clean
+          .write()
+          .map(move |mut seen_metrics| {
+            seen_metrics.retain(|_k, v: &mut TaggedMetric| match v.seen.elapsed() {
+              Ok(delta) => {
+                let expired = delta.as_secs() > ttl;
+                if expired {
+                  debug!("Haven't heard from {}:{:?} in too long, purging", v.source, v.metric)
+                }
+                return !expired;
+              },
+              Err(e) => {
+                error!("[GC] system time error! {}", e);
+                true
+              }
+            });
+          })
+          .map_err(|e| error!("[GC] write lock error {:?}", e))
+      }
+    })
+    .map(|_| ())
+    .map_err(|_| ());
+
+  let dumper = Interval::new_interval(Duration::from_secs(5))
+    .map_err(|e| error!("[DUMP] Timer error {:?}", e))
+    .for_each({
+      let seen_metrics = seen_metrics.clone();
+      move |_| {
+        info!("[DUMP] Starting dump of seen metrics");
+        seen_metrics.read().map(move |seen_metrics| {
+          println!("[DUMP] {:#?}", *seen_metrics);
+        })
+      }
+    });
+
+  let (metric_tx, metric_rx) = tokio::sync::mpsc::channel(100);
+  let unpacker = stream
+    .filter(|x| x.is_ok())
+    .map(|u| u.unwrap())
+    .for_each(move |u| {
+      let metric_tx = metric_tx.clone();
+      metric_tx
+        .send_all(futures::stream::iter_ok(u))
+        .into_future()
+        .map(|_| ())
+        .map_err(|e| error!("[UNPACK] Sink error {:?}", e))
+    });
+
+  let seen_metrics = seen_metrics.clone();
+  let map_handler = metric_rx
+    .map_err(|e| error!("[SCRIBE] Recv error {:?}", e))
+    .for_each(move |metric| {
+      seen_metrics.write().map(|mut seen_metrics| {
+        println!("[SCRIBE] Saving entry {:?}", &metric);
+        match seen_metrics.entry(metric.source) {
+          hash::Entry::Occupied(mut e) => {
+            e.insert(metric);
+          }
+          hash::Entry::Vacant(e) => {
+            e.insert(metric);
+          }
+        }
+      })
+      .into_future()
+      .map(|_| ())
+      .map_err(|_| ())
+    });
+
+  let dumper = dumper.into_future().map(|_| ()).map_err(|_| ());
+  let garbage = garbage.into_future().map(|_| ()).map_err(|_| ());
+  let map_handler = map_handler.into_future().map(|_| ()).map_err(|_| ());
+
+  let fut = unpacker.join(garbage);
+  let fut = fut.join(map_handler);
+  let fut = fut.join(dumper);
+
+  Ok(tokio::run(fut.map(|_| ())))
 }

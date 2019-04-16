@@ -12,4 +12,5 @@ pcap = { version = "0.7.1", git = "https://github.com/packysauce/pcap", features
 log = "0.4.6"
 simple_logger = "1.0"
 failure = "0.1"
+futures-locks = "0.3"
 statsd-parser = "0.3"
